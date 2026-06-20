@@ -6,7 +6,108 @@
 <title>RentaCrib ZW — Find Your Home in Zimbabwe</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300&display=swap" rel="stylesheet">
+<!-- ══════════ SUPABASE SDK ══════════ -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ── RentaCrib Supabase Config ──
+const SUPABASE_URL = 'https://lznwrcgwvecxwqqjsdsi.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6bndyY2d3dmVjeHdxcWpzZHNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5MTAzODUsImV4cCI6MjA5NzQ4NjM4NX0.c3t-aRmLxazWvUAnm63FTvcK57suh-F5VQ8aPnQmFWI';
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ══════════════════════════════════════
+//  SUPABASE HELPERS
+// ══════════════════════════════════════
+
+// Save a new listing to Supabase
+async function saveListingToSupabase(listing) {
+  try {
+    const { data, error } = await db.from('properties').insert([{
+      title:       listing.title       || '',
+      city:        (listing.location   || '').split(',')[0].trim(),
+      type:        listing.type        || '',
+      price:       listing.rent        || 0,
+      bedrooms:    listing.rooms       || 1,
+      description: listing.desc        || '',
+      whatsapp:    listing.phone       || '',
+      status:      listing.draft ? 'draft' : 'active'
+    }]).select();
+    if (error) { console.warn('Supabase save error:', error.message); return null; }
+    if (data && data[0]) listing._dbId = data[0].id;
+    console.log('✅ Listing saved to Supabase:', data);
+    return data;
+  } catch(e) { console.warn('Supabase save failed:', e); return null; }
+}
+
+// Load all listings from Supabase and merge into local array
+async function loadListingsFromSupabase() {
+  try {
+    const { data, error } = await db.from('properties').select('*').eq('status','active').order('created_at', { ascending: false });
+    if (error) { console.warn('Supabase load error:', error.message); return; }
+    if (!data || !data.length) return;
+    // Map Supabase rows → local listing format
+    const remoteListings = data.map(row => ({
+      id:         row.id,
+      _dbId:      row.id,
+      _remote:    true,
+      title:      row.title       || 'Listing',
+      location:   row.city        || '',
+      type:       row.type        || 'Full House',
+      rent:       row.price       || 0,
+      rooms:      row.bedrooms    || 1,
+      desc:       row.description || '',
+      phone:      row.whatsapp    || '',
+      whatsapp:   row.whatsapp    || '',
+      amenities:  [],
+      forWho:     ['Anyone'],
+      role:       'tenant',
+      category:   'tenant',
+      photo:      'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800&q=80&auto=format&fit=crop',
+      photos:     [],
+      listedAt:   new Date(row.created_at).getTime(),
+      verified:   false,
+      views:      0,
+    }));
+    // Merge into global listings array — avoid duplicates by _dbId
+    const existingDbIds = new Set(listings.filter(l=>l._dbId).map(l=>l._dbId));
+    remoteListings.forEach(r => { if (!existingDbIds.has(r._dbId)) listings.push(r); });
+    console.log(`✅ Loaded ${remoteListings.length} listings from Supabase`);
+    // Re-render if browse is currently visible
+    if (document.getElementById('pg-tenant')?.classList.contains('active') ||
+        document.getElementById('pg-student')?.classList.contains('active')) {
+      if (typeof filterAndRender === 'function') filterAndRender();
+    }
+  } catch(e) { console.warn('Supabase load failed:', e); }
+}
+
+// Save an enquiry to Supabase
+async function saveEnquiryToSupabase(propertyId, tenantName, tenantPhone, message) {
+  try {
+    const { error } = await db.from('enquiries').insert([{
+      property_id:   propertyId  || null,
+      tenant_name:   tenantName  || '',
+      tenant_phone:  tenantPhone || '',
+      message:       message     || ''
+    }]);
+    if (error) console.warn('Enquiry save error:', error.message);
+    else console.log('✅ Enquiry saved to Supabase');
+  } catch(e) { console.warn('Enquiry save failed:', e); }
+}
+
+// Delete a listing from Supabase
+async function deleteListingFromSupabase(dbId) {
+  if (!dbId) return;
+  try {
+    const { error } = await db.from('properties').delete().eq('id', dbId);
+    if (error) console.warn('Supabase delete error:', error.message);
+    else console.log('✅ Listing deleted from Supabase');
+  } catch(e) { console.warn('Supabase delete failed:', e); }
+}
+
+// Load on page ready
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(loadListingsFromSupabase, 800);
+});
+</script>
 <style>
 /* ═══════════════════════════════════════
    DESIGN TOKENS
@@ -6750,7 +6851,7 @@ function buildReview() {
     <div><div class="asec-label" style="margin-bottom:10px;">Your Description</div><div class="review-desc">${desc}</div></div>`;
 }
 
-async function submitListing() {
+function submitListing() {
   const type = document.querySelector('.tcard.selected .tcard-name')?.textContent || '';
   const cat = getActiveCategory();
   const isGuest = cat === 'guests';
@@ -6799,19 +6900,12 @@ async function submitListing() {
   // ── Edit vs. Create ──
   const editingId = (typeof Auth !== 'undefined') ? Auth._editingId : null;
   if (editingId) {
-    // Update existing listing in Supabase
-    await _sb.from('listings').update({
-      title: newL.title, location: newL.location, suburb: newL.suburb, city: newL.city,
-      rent: newL.rent, rooms: newL.rooms, type: newL.type, category: newL.category, role: newL.role,
-      phone: newL.phone, call_phone: newL.callPhone, description: newL.desc,
-      amenities: newL.amenities, photo: newL.photo, for_who: newL.forWho,
-      university: newL.university, students_per_room: newL.studentsPerRoom
-    }).eq('id', editingId);
-
+    // Update existing listing in-place
     const idx = myListings.findIndex(l => l.id === editingId);
     if (idx > -1) { myListings[idx] = { ...myListings[idx], ...newL, id: editingId }; newL.id = editingId; }
     const gi = listings.findIndex(l => l.id === editingId);
     if (gi > -1) listings[gi] = { ...listings[gi], ...newL, id: editingId };
+    // If category changed away from lodge, remove orphan from myLodges
     if (selectedCategory !== 'lodge') {
       const li = myLodges.findIndex(l => l.id === editingId);
       if (li > -1) myLodges.splice(li, 1);
@@ -6819,26 +6913,11 @@ async function submitListing() {
     Auth._editingId = null;
     toast('✓ Listing updated!');
   } else {
-    // Insert new listing into Supabase
-    const s = Auth._session ? Auth._session() : JSON.parse(localStorage.getItem('rc_session') || 'null');
-    const landlordId = s?.landlordId || null;
-
-    const { data: inserted, error: insErr } = await _sb.from('listings').insert({
-      landlord_id: landlordId,
-      title: newL.title, location: newL.location, suburb: newL.suburb, city: newL.city,
-      rent: newL.rent, rooms: newL.rooms, type: newL.type, category: newL.category, role: newL.role,
-      phone: newL.phone, call_phone: newL.callPhone, description: newL.desc,
-      amenities: newL.amenities, photo: newL.photo, for_who: newL.forWho,
-      university: newL.university, students_per_room: newL.studentsPerRoom,
-      is_active: true
-    }).select().single();
-
-    if (!insErr && inserted) {
-      newL.id = inserted.id;
-      newL._dbId = inserted.id;
-      newL._landlordId = landlordId;
-    }
     myListings.push(newL); listings.unshift(newL);
+    // ── Save to Supabase ──
+    saveListingToSupabase(newL).then(() => {
+      console.log('Listing synced to Supabase database');
+    });
   }
 
   // Reveal the landlord nav dropdown now that they have a listing
@@ -7183,7 +7262,7 @@ function buildLodgeReview() {
     <div class="review-desc">${desc}</div>`;
 }
 
-async function submitLodge() {
+function submitLodge() {
   const type = document.querySelector('.lodge-tcard.selected .tcard-name')?.textContent || '';
   const LODGE_TYPE_PHOTOS = {
     'Bush Lodge':'https://images.unsplash.com/photo-1489392191049-fc10c97e64b6?w=600&q=80',
@@ -7214,22 +7293,6 @@ async function submitLodge() {
     photo: LODGE_TYPE_PHOTOS[type] || LODGE_TYPE_PHOTOS['Bush Lodge'],
   };
   myLodges.push(newLodge);
-
-  // Save lodge to Supabase
-  (async () => {
-    const s = JSON.parse(localStorage.getItem('rc_session') || 'null');
-    const landlordId = s?.landlordId || null;
-    const { data: inserted } = await _sb.from('lodges').insert({
-      landlord_id: landlordId,
-      name: newLodge.name, location: newLodge.location, city: newLodge.city || '',
-      type: newLodge.type, price_per_night: newLodge.pricePerNight,
-      hourly_rate: newLodge.hourlyRate, day_rate: newLodge.dayRate, weekly_rate: newLodge.weeklyRate,
-      chalets: newLodge.chalets, max_guests: newLodge.maxGuests,
-      phone: newLodge.phone, call_phone: newLodge.callPhone, description: newLodge.desc,
-      features: newLodge.features, stars: newLodge.stars, available: true, photo: newLodge.photo
-    }).select().single();
-    if (inserted) { newLodge.id = inserted.id; newLodge._dbId = inserted.id; }
-  })();
   // reset
   lodgeStep = 1;
   document.querySelectorAll('.lodge-tcard').forEach(e => e.classList.remove('selected'));
@@ -7653,64 +7716,16 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ══════════════════════════════════════
-//  SUPABASE CLIENT
-// ══════════════════════════════════════
-const _sb = supabase.createClient(
-  'https://fhmyxdtehytjikqhosqi.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZobXl4ZHRlaHl0amlrcWhvc3FpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUzMjg3MzksImV4cCI6MjA5MDkwNDczOX0.lVzv30mlyU5bUEpofGtMQZxtb8Su2LAt6T0RawOsq9Q'
-);
-
-// ── Simple PIN hashing (SHA-256) ──
-async function hashPin(pin) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pin));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
-}
-
-// ── Load all listings from Supabase into memory ──
-async function loadAllListingsFromDB() {
-  try {
-    const { data: dbListings } = await _sb.from('listings').select('*').eq('is_active', true);
-    const { data: dbLodges }   = await _sb.from('lodges').select('*').eq('available', true);
-
-    if (dbListings) {
-      const mapped = dbListings.map(l => ({
-        id: l.id, title: l.title, location: l.location, suburb: l.suburb, city: l.city,
-        rent: l.rent, rooms: l.rooms, type: l.type, category: l.category, role: l.role,
-        phone: l.phone, callPhone: l.call_phone, desc: l.description,
-        amenities: l.amenities || [], photo: l.photo || 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800&q=80&auto=format&fit=crop',
-        forWho: l.for_who || [], university: l.university,
-        studentsPerRoom: l.students_per_room, views: l.views || 0,
-        _landlordId: l.landlord_id, _dbId: l.id,
-        listedAt: new Date(l.created_at).getTime()
-      }));
-      // Merge into listings array — keep demo listings, add real ones at front
-      mapped.forEach(m => {
-        if (!listings.find(x => x._dbId === m._dbId)) listings.unshift(m);
-      });
-    }
-
-    if (dbLodges) {
-      const mappedL = dbLodges.map(l => ({
-        id: l.id, name: l.name, location: l.location, city: l.city, type: l.type,
-        pricePerNight: l.price_per_night, hourlyRate: l.hourly_rate, dayRate: l.day_rate,
-        weeklyRate: l.weekly_rate, chalets: l.chalets, maxGuests: l.max_guests,
-        phone: l.phone, callPhone: l.call_phone, desc: l.description,
-        features: l.features || [], stars: l.stars || 4, available: l.available,
-        photo: l.photo || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&q=80&auto=format&fit=crop',
-        _landlordId: l.landlord_id, _dbId: l.id
-      }));
-      mappedL.forEach(m => {
-        if (!lodges.find(x => x._dbId === m._dbId)) lodges.unshift(m);
-      });
-    }
-  } catch(e) { console.warn('DB load error:', e); }
-}
-
-// ══════════════════════════════════════
-//  AUTH MODULE — SUPABASE BACKEND
+//  AUTH MODULE
+//  API endpoints (no backend logic here):
+//    POST /api/signup          body: { username }   → { code, pin, username, token? }
+//    POST /api/login           body: { code, pin }  → { username, token }
+//    GET  /api/listings        Authorization: Bearer <token>  → { listings: [...] }
+//    POST /api/edit-listing    Authorization: Bearer <token>, body: { id, ...fields }
+//    POST /api/delete-listing  Authorization: Bearer <token>, body: { id }
 // ══════════════════════════════════════
 const Auth = (() => {
-  const LS_KEY = 'rc_session';
+  const LS_KEY = 'rc_session'; // { code, pin, username, token }
 
   /* ── session helpers ── */
   function session() {
@@ -7718,6 +7733,12 @@ const Auth = (() => {
   }
   function saveSession(s) { localStorage.setItem(LS_KEY, JSON.stringify(s)); }
   function clearSession() { localStorage.removeItem(LS_KEY); }
+  function authHeaders() {
+    const s = session();
+    const h = { 'Content-Type': 'application/json' };
+    if (s && s.token) h['Authorization'] = 'Bearer ' + s.token;
+    return h;
+  }
 
   /* ── UI helpers ── */
   function setLoading(btnId, on) {
@@ -7757,7 +7778,7 @@ const Auth = (() => {
       if (pill)   pill.style.display = 'flex';
       if (avatar) avatar.textContent = (s.username || '?')[0].toUpperCase();
       if (uname)  uname.textContent  = s.username || s.code;
-      if (btnList) btnList.style.display = 'block';
+      if (btnList) btnList.style.display = 'block'; // FIX 1: always visible; onListProperty handles auth
       if (lndBtn)  lndBtn.style.display  = 'block';
     } else {
       if (pill)    pill.style.display    = 'none';
@@ -7766,60 +7787,59 @@ const Auth = (() => {
     }
   }
 
-  /* ── Sign Up — SUPABASE ── */
+  /* ── Sign Up — LOCAL (no backend) ── */
   async function signup() {
     const username = (document.getElementById('signupUsername')?.value || '').trim();
     if (!username) { showErr('signupError', 'Enter a display name to continue.'); return; }
 
     setLoading('signupBtn', true); showErr('signupError', '');
 
-    try {
-      function randCode(len, chars) {
-        let out = '';
+    // Generate a unique 6-character alphanumeric code + 4-digit PIN locally
+    // FIX 8: fallback for non-HTTPS where crypto.getRandomValues may be unavailable
+    function randCode(len, chars) {
+      let out = '';
+      if (window.crypto && window.crypto.getRandomValues) {
         const arr = new Uint8Array(len);
         crypto.getRandomValues(arr);
         for (let i = 0; i < len; i++) out += chars[arr[i] % chars.length];
-        return out;
+      } else {
+        for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
       }
-      const code = randCode(6, 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789');
-      const pin  = randCode(4, '0123456789');
-
-      // Check code uniqueness
-      const { data: existing } = await _sb.from('landlords').select('id').eq('code', code);
-      if (existing && existing.length > 0) {
-        showErr('signupError', 'Please try again.'); setLoading('signupBtn', false); return;
-      }
-
-      const pinHash = await hashPin(pin);
-
-      const { error } = await _sb.from('landlords').insert({ code, pin_hash: pinHash, name: username });
-      if (error) throw new Error('Sign up failed. Please try again.');
-
-      saveSession({ code, pin, username, landlordId: null });
-
-      // Get the landlord ID we just created
-      const { data: newLandlord } = await _sb.from('landlords').select('id').eq('code', code).single();
-      if (newLandlord) saveSession({ code, pin, username, landlordId: newLandlord.id });
-
-      // Show credentials
-      const credCode = document.getElementById('credCode');
-      const credPin  = document.getElementById('credPin');
-      if (credCode) credCode.textContent = code;
-      if (credPin)  credPin.textContent  = pin;
-      document.getElementById('credBox')?.classList.add('show');
-      document.getElementById('signupForm').style.display    = 'none';
-      document.getElementById('signupContinue').style.display = 'block';
-
-      applyNavState();
-      toast('✓ Account created! Save your Code + PIN.');
-    } catch(err) {
-      showErr('signupError', err.message);
-    } finally {
-      setLoading('signupBtn', false);
+      return out;
     }
+    const code = randCode(6, 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789');
+    const pin  = randCode(4, '0123456789');
+
+    // Save to localStorage — no API call needed
+    saveSession({ code, pin, username, token: code + pin });
+    // Also persist in a simple "users" store so login works
+    try {
+      const users = JSON.parse(localStorage.getItem('rc_users') || '{}');
+      users[code] = { pin, username };
+      localStorage.setItem('rc_users', JSON.stringify(users));
+    } catch(e) {}
+
+    // Populate login fields
+    const lc = document.getElementById('loginCode');
+    const lp = document.getElementById('loginPin');
+    if (lc) lc.value = code;
+    if (lp) lp.value = pin;
+
+    // Show credential box
+    const credCode = document.getElementById('credCode');
+    const credPin  = document.getElementById('credPin');
+    if (credCode) credCode.textContent = code;
+    if (credPin)  credPin.textContent  = pin;
+    document.getElementById('credBox')?.classList.add('show');
+    document.getElementById('signupForm').style.display    = 'none';
+    document.getElementById('signupContinue').style.display = 'block';
+
+    applyNavState();
+    setLoading('signupBtn', false);
+    toast('✓ Account created! Save your Code + PIN.');
   }
 
-  /* ── Login — SUPABASE ── */
+  /* ── Login — LOCAL (no backend) ── */
   async function login() {
     const code = (document.getElementById('loginCode')?.value || '').trim().toUpperCase();
     const pin  = (document.getElementById('loginPin')?.value  || '').trim();
@@ -7828,16 +7848,17 @@ const Auth = (() => {
 
     setLoading('loginBtn', true); showErr('loginError', '');
     try {
-      const { data: landlord, error } = await _sb.from('landlords').select('*').eq('code', code).single();
-      if (error || !landlord) throw new Error('Code not found. Please check and try again.');
+      // First check localStorage users store
+      const users = JSON.parse(localStorage.getItem('rc_users') || '{}');
+      const user  = users[code];
 
-      const pinHash = await hashPin(pin);
-      if (pinHash !== landlord.pin_hash) throw new Error('Incorrect PIN. Please try again.');
+      if (!user) throw new Error('Code not found. Please check and try again.');
+      if (user.pin !== pin) throw new Error('Incorrect PIN. Please try again.');
 
-      saveSession({ code, pin, username: landlord.name || code, landlordId: landlord.id });
+      saveSession({ code, pin, username: user.username || code, token: code + pin });
       applyNavState();
       toast('✓ Logged in!');
-      await loadDashboard();
+      renderDashboard(myListings.filter(l => l._ownerCode === code));
       showPage('pg-dashboard');
     } catch (err) {
       showErr('loginError', err.message);
@@ -7849,7 +7870,7 @@ const Auth = (() => {
   /* ── Logout ── */
   function logout() {
     if (!confirm('Log out of your account?')) return;
-    clearSession(); myListings = []; myLodges = [];
+    clearSession(); myListings = [];
     applyNavState(); goHome(); toast('Logged out.');
   }
 
@@ -7867,42 +7888,19 @@ const Auth = (() => {
       .then(() => toast('✓ Code + PIN copied to clipboard!'));
   }
 
-  /* ── Load & render dashboard — SUPABASE ── */
+  /* ── Load & render dashboard — LOCAL ── */
   async function loadDashboard() {
     const s = session();
-    if (!s || !s.landlordId) return;
+    if (!s) return;
 
     const dashName = document.getElementById('dashName');
     const dashCode = document.getElementById('dashCodeDisplay');
     if (dashName) dashName.textContent = s.username || s.code;
     if (dashCode) dashCode.textContent = 'Manage Code: ' + s.code;
 
-    // Load this landlord's listings from DB
-    const { data: dbListings } = await _sb.from('listings').select('*').eq('landlord_id', s.landlordId);
-    const { data: dbLodges }   = await _sb.from('lodges').select('*').eq('landlord_id', s.landlordId);
-
-    myListings = (dbListings || []).map(l => ({
-      id: l.id, title: l.title, location: l.location, suburb: l.suburb, city: l.city,
-      rent: l.rent, rooms: l.rooms, type: l.type, category: l.category, role: l.role,
-      phone: l.phone, callPhone: l.call_phone, desc: l.description,
-      amenities: l.amenities || [], photo: l.photo || 'https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800&q=80&auto=format&fit=crop',
-      forWho: l.for_who || [], university: l.university,
-      studentsPerRoom: l.students_per_room, views: l.views || 0,
-      _ownerCode: s.code, _landlordId: s.landlordId, _dbId: l.id,
-      listedAt: new Date(l.created_at).getTime()
-    }));
-
-    myLodges = (dbLodges || []).map(l => ({
-      id: l.id, name: l.name, location: l.location, city: l.city, type: l.type,
-      pricePerNight: l.price_per_night, hourlyRate: l.hourly_rate, dayRate: l.day_rate,
-      weeklyRate: l.weekly_rate, chalets: l.chalets, maxGuests: l.max_guests,
-      phone: l.phone, callPhone: l.call_phone, desc: l.description,
-      features: l.features || [], stars: l.stars || 4, available: l.available,
-      photo: l.photo || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800&q=80&auto=format&fit=crop',
-      _ownerCode: s.code, _landlordId: s.landlordId, _dbId: l.id
-    }));
-
-    renderDashboard(myListings);
+    // Filter local listings to those strictly belonging to this user
+    const items = myListings.filter(l => l._ownerCode === s.code);
+    renderDashboard(items);
   }
 
   function renderDashboard(items) {
@@ -8021,12 +8019,9 @@ const Auth = (() => {
     else toast('Edit flow unavailable.');
   }
 
-  /* ── Delete — SUPABASE ── */
+  /* ── Delete — LOCAL ── */
   async function deleteListing(id) {
     if (!confirm('Permanently delete this listing?')) return;
-
-    // Delete from Supabase
-    await _sb.from('listings').delete().eq('id', id);
 
     myListings = myListings.filter(l => l.id !== id);
     const gi = listings.findIndex(l => l.id === id);
@@ -8037,8 +8032,16 @@ const Auth = (() => {
       card.style.cssText += 'opacity:0;transform:scale(0.96);transition:all 0.3s;';
       setTimeout(() => card.remove(), 300);
     }
+    // ── Delete from Supabase if it has a DB id ──
+    const deletedListing = listings.find(l => l.id === id) || myListings.find(l => l.id === id);
+    if (deletedListing && deletedListing._dbId) deleteListingFromSupabase(deletedListing._dbId);
     toast('✓ Listing deleted.');
-    await loadDashboard();
+    const s2 = session();
+    const remaining = myListings.filter(l => l._ownerCode === s2?.code);
+    const myLodgesOwned2 = (typeof myLodges !== 'undefined') ? myLodges.filter(l => !l._ownerCode || l._ownerCode === s2?.code) : [];
+    const totalAll = remaining.length + myLodgesOwned2.filter(l => !remaining.find(r => r.id === l.id)).length;
+    const st = document.getElementById('statTotal');  if (st) st.textContent = totalAll;
+    const sa = document.getElementById('statActive'); if (sa) sa.textContent = remaining.filter(l=>!l.draft).length + myLodgesOwned2.filter(l=>l.available!==false).length;
   }
 
   /* ── "List Property" nav button — gate behind auth ── */
@@ -8083,17 +8086,18 @@ const Auth = (() => {
     if (s) loadDashboard();
   }
 
-  /* ── Delete Lodge — SUPABASE ── */
-  async function deleteLodge(id) {
+  /* ── Delete Lodge — LOCAL ── */
+  function deleteLodge(id) {
     if (!confirm('Permanently delete this lodge?')) return;
-
-    await _sb.from('lodges').delete().eq('id', id);
-
-    if (typeof myLodges !== 'undefined') myLodges = myLodges.filter(l => l.id !== id);
-    if (typeof myListings !== 'undefined') myListings = myListings.filter(l => l.id !== id);
-    if (typeof lodges !== 'undefined') {
-      const gi = lodges.findIndex(l => l.id === id);
-      if (gi > -1) lodges.splice(gi, 1);
+    if (typeof myLodges !== 'undefined') {
+      myLodges = myLodges.filter(l => l.id !== id);
+    }
+    if (typeof myListings !== 'undefined') {
+      myListings = myListings.filter(l => l.id !== id);
+    }
+    if (typeof listings !== 'undefined') {
+      const gi = listings.findIndex(l => l.id === id);
+      if (gi > -1) listings.splice(gi, 1);
     }
     const card = document.getElementById('dlc-' + id);
     if (card) {
@@ -8101,7 +8105,7 @@ const Auth = (() => {
       setTimeout(() => card.remove(), 300);
     }
     toast('✓ Lodge deleted.');
-    await loadDashboard();
+    loadDashboard();
   }
 
   return { showTab, signup, login, logout, copyCred, copyAll, loadDashboard, renderDashboard, editListing, deleteListing, deleteLodge, onListProperty, continueAfterSignup, goToListProperty, init, _editingId: null, _session: session };
@@ -8124,23 +8128,10 @@ function restoreViewCounts() {
 
 // Bootstrap
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', async () => { 
-    restoreViewCounts(); 
-    Auth.init();
-    await loadAllListingsFromDB();
-    // Re-render browse if visible
-    if (typeof filterTenantListings === 'function') filterTenantListings();
-    if (typeof filterStudentListings === 'function') filterStudentListings();
-    if (typeof filterLodges === 'function') filterLodges();
-  });
+  document.addEventListener('DOMContentLoaded', () => { restoreViewCounts(); Auth.init(); });
 } else {
   restoreViewCounts();
   Auth.init();
-  loadAllListingsFromDB().then(() => {
-    if (typeof filterTenantListings === 'function') filterTenantListings();
-    if (typeof filterStudentListings === 'function') filterStudentListings();
-    if (typeof filterLodges === 'function') filterLodges();
-  });
 }
 </script>
 
